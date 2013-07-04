@@ -5,7 +5,7 @@
 -- the client uses JSON4LUA module for parsing JSON (provided below)
 -- client code starts around line 270
 
--- v1.1 noticed that you don't need to escape single quotes, per json spesifications
+-- v1.1 noticed that you don't need to escape single quotes, per json specifications
 -- v1.0 first version
 
 

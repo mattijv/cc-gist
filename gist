@@ -1,0 +1,400 @@
+-- Gist Client for ComputerCraft
+-- version 1.1
+-- Matti Vapa, 2013
+-- License: MIT
+-- the client uses JSON4LUA module for parsing JSON (provided below)
+-- client code starts around line 270
+
+-- v1.1 noticed that you don't need to escape single quotes, per json spesifications
+-- v1.0 first version
+
+
+-----------------------------------------------------------------------------
+-- JSON4Lua: JSON encoding / decoding support for the Lua language.
+-- json Module.
+-- Author: Craig Mason-Jones
+-- Homepage: http://json.luaforge.net/
+-- Version: 0.9.40
+-- This module is released under the MIT License (MIT).
+
+-- edited for brevity
+
+local base = _G
+local decode_scanArray
+local decode_scanComment
+local decode_scanConstant
+local decode_scanNumber
+local decode_scanObject
+local decode_scanString
+local decode_scanWhitespace
+local encodeString
+local isArray
+local isEncodable
+
+local function encode (v)
+  -- Handle nil values
+  if v==nil then
+    return "null"
+  end
+  
+  local vtype = base.type(v)  
+
+  -- Handle strings
+  if vtype=='string' then    
+    return '"' .. encodeString(v) .. '"'      -- Need to handle encoding in string
+  end
+  
+  -- Handle booleans
+  if vtype=='number' or vtype=='boolean' then
+    return base.tostring(v)
+  end
+  
+  -- Handle tables
+  if vtype=='table' then
+    local rval = {}
+    -- Consider arrays separately
+    local bArray, maxCount = isArray(v)
+    if bArray then
+      for i = 1,maxCount do
+        table.insert(rval, encode(v[i]))
+      end
+    else	-- An object, not an array
+      for i,j in base.pairs(v) do
+        if isEncodable(i) and isEncodable(j) then
+          table.insert(rval, '"' .. encodeString(i) .. '":' .. encode(j))
+        end
+      end
+    end
+    if bArray then
+      return '[' .. table.concat(rval,',') ..']'
+    else
+      return '{' .. table.concat(rval,',') .. '}'
+    end
+  end
+  
+  -- Handle null values
+  if vtype=='function' and v==null then
+    return 'null'
+  end
+  
+  base.assert(false,'encode attempt to encode unsupported type ' .. vtype .. ':' .. base.tostring(v))
+end
+
+local function decode(s, startPos)
+  startPos = startPos and startPos or 1
+  startPos = decode_scanWhitespace(s,startPos)
+  base.assert(startPos<=string.len(s), 'Unterminated JSON encoded object found at position in [' .. s .. ']')
+  local curChar = string.sub(s,startPos,startPos)
+  -- Object
+  if curChar=='{' then
+    return decode_scanObject(s,startPos)
+  end
+  -- Array
+  if curChar=='[' then
+    return decode_scanArray(s,startPos)
+  end
+  -- Number
+  if string.find("+-0123456789.e", curChar, 1, true) then
+    return decode_scanNumber(s,startPos)
+  end
+  -- String
+  if curChar==[["]] or curChar==[[']] then
+    return decode_scanString(s,startPos)
+  end
+  if string.sub(s,startPos,startPos+1)=='/*' then
+    return decode(s, decode_scanComment(s,startPos))
+  end
+  -- Otherwise, it must be a constant
+  return decode_scanConstant(s,startPos)
+end
+
+local function null()
+  return null -- so json.null() will also return null ;-)
+end
+
+
+function decode_scanArray(s,startPos)
+  local array = {}	-- The return value
+  local stringLen = string.len(s)
+  base.assert(string.sub(s,startPos,startPos)=='[','decode_scanArray called but array does not start at position ' .. startPos .. ' in string:\n'..s )
+  startPos = startPos + 1
+  -- Infinite loop for array elements
+  repeat
+    startPos = decode_scanWhitespace(s,startPos)
+    base.assert(startPos<=stringLen,'JSON String ended unexpectedly scanning array.')
+    local curChar = string.sub(s,startPos,startPos)
+    if (curChar==']') then
+      return array, startPos+1
+    end
+    if (curChar==',') then
+      startPos = decode_scanWhitespace(s,startPos+1)
+    end
+    base.assert(startPos<=stringLen, 'JSON String ended unexpectedly scanning array.')
+    object, startPos = decode(s,startPos)
+    table.insert(array,object)
+  until false
+end
+
+function decode_scanComment(s, startPos)
+  base.assert( string.sub(s,startPos,startPos+1)=='/*', "decode_scanComment called but comment does not start at position " .. startPos)
+  local endPos = string.find(s,'*/',startPos+2)
+  base.assert(endPos~=nil, "Unterminated comment in string at " .. startPos)
+  return endPos+2  
+end
+
+function decode_scanConstant(s, startPos)
+  local consts = { ["true"] = true, ["false"] = false, ["null"] = nil }
+  local constNames = {"true","false","null"}
+
+  for i,k in base.pairs(constNames) do
+    --print ("[" .. string.sub(s,startPos, startPos + string.len(k) -1) .."]", k)
+    if string.sub(s,startPos, startPos + string.len(k) -1 )==k then
+      return consts[k], startPos + string.len(k)
+    end
+  end
+  base.assert(nil, 'Failed to scan constant from string ' .. s .. ' at starting position ' .. startPos)
+end
+
+function decode_scanNumber(s,startPos)
+  local endPos = startPos+1
+  local stringLen = string.len(s)
+  local acceptableChars = "+-0123456789.e"
+  while (string.find(acceptableChars, string.sub(s,endPos,endPos), 1, true)
+	and endPos<=stringLen
+	) do
+    endPos = endPos + 1
+  end
+  local stringValue = 'return ' .. string.sub(s,startPos, endPos-1)
+  local stringEval = base.loadstring(stringValue)
+  base.assert(stringEval, 'Failed to scan number [ ' .. stringValue .. '] in JSON string at position ' .. startPos .. ' : ' .. endPos)
+  return stringEval(), endPos
+end
+
+function decode_scanObject(s,startPos)
+  local object = {}
+  local stringLen = string.len(s)
+  local key, value
+  base.assert(string.sub(s,startPos,startPos)=='{','decode_scanObject called but object does not start at position ' .. startPos .. ' in string:\n' .. s)
+  startPos = startPos + 1
+  repeat
+    startPos = decode_scanWhitespace(s,startPos)
+    base.assert(startPos<=stringLen, 'JSON string ended unexpectedly while scanning object.')
+    local curChar = string.sub(s,startPos,startPos)
+    if (curChar=='}') then
+      return object,startPos+1
+    end
+    if (curChar==',') then
+      startPos = decode_scanWhitespace(s,startPos+1)
+    end
+    base.assert(startPos<=stringLen, 'JSON string ended unexpectedly scanning object.')
+    -- Scan the key
+    key, startPos = decode(s,startPos)
+    base.assert(startPos<=stringLen, 'JSON string ended unexpectedly searching for value of key ' .. key)
+    startPos = decode_scanWhitespace(s,startPos)
+    base.assert(startPos<=stringLen, 'JSON string ended unexpectedly searching for value of key ' .. key)
+    base.assert(string.sub(s,startPos,startPos)==':','JSON object key-value assignment mal-formed at ' .. startPos)
+    startPos = decode_scanWhitespace(s,startPos+1)
+    base.assert(startPos<=stringLen, 'JSON string ended unexpectedly searching for value of key ' .. key)
+    value, startPos = decode(s,startPos)
+    object[key]=value
+  until false	-- infinite loop while key-value pairs are found
+end
+
+function decode_scanString(s,startPos)
+  base.assert(startPos, 'decode_scanString(..) called without start position')
+  local startChar = string.sub(s,startPos,startPos)
+  base.assert(startChar==[[']] or startChar==[["]],'decode_scanString called for a non-string')
+  local escaped = false
+  local endPos = startPos + 1
+  local bEnded = false
+  local stringLen = string.len(s)
+  repeat
+    local curChar = string.sub(s,endPos,endPos)
+    -- Character escaping is only used to escape the string delimiters
+    if not escaped then	
+      if curChar==[[\]] then
+        escaped = true
+      else
+        bEnded = curChar==startChar
+      end
+    else
+      -- If we're escaped, we accept the current character come what may
+      escaped = false
+    end
+    endPos = endPos + 1
+    base.assert(endPos <= stringLen+1, "String decoding failed: unterminated string at position " .. endPos)
+  until bEnded
+  local stringValue = 'return ' .. string.sub(s, startPos, endPos-1)
+  local stringEval = base.loadstring(stringValue)
+  base.assert(stringEval, 'Failed to load string [ ' .. stringValue .. '] in JSON4Lua.decode_scanString at position ' .. startPos .. ' : ' .. endPos)
+  return stringEval(), endPos  
+end
+
+function decode_scanWhitespace(s,startPos)
+  local whitespace=" \n\r\t"
+  local stringLen = string.len(s)
+  while ( string.find(whitespace, string.sub(s,startPos,startPos), 1, true)  and startPos <= stringLen) do
+    startPos = startPos + 1
+  end
+  return startPos
+end
+
+function encodeString(s)
+  s = string.gsub(s,'\\','\\\\')
+  s = string.gsub(s,'"','\\"')
+  s = string.gsub(s,'\n','\\n')
+  s = string.gsub(s,'\t','\\t')
+  return s 
+end
+
+function isArray(t)
+  -- Next we count all the elements, ensuring that any non-indexed elements are not-encodable 
+  -- (with the possible exception of 'n')
+  local maxIndex = 0
+  for k,v in base.pairs(t) do
+    if (base.type(k)=='number' and math.floor(k)==k and 1<=k) then	-- k,v is an indexed pair
+      if (not isEncodable(v)) then return false end	-- All array elements must be encodable
+      maxIndex = math.max(maxIndex,k)
+    else
+      if (k=='n') then
+        if v ~= table.getn(t) then return false end  -- False if n does not hold the number of elements
+      else -- Else of (k=='n')
+        if isEncodable(v) then return false end
+      end  -- End of (k~='n')
+    end -- End of k,v not an indexed pair
+  end  -- End of loop across all pairs
+  return true, maxIndex
+end
+
+function isEncodable(o)
+  local t = base.type(o)
+  return (t=='string' or t=='boolean' or t=='number' or t=='nil' or t=='table') or (t=='function' and o==null) 
+end
+
+
+
+
+-- Gist Client
+-- 2013 Matti Vapa
+-- License: MIT
+
+local url = "https://api.github.com/gists"
+
+-- default parameters for POST
+local putvars = {}
+putvars["description"] = ""
+putvars["public"] = true
+putvars["files"] = {}
+
+
+local printUsage = function()
+	print("Usage:")
+	print("gist get <id>")
+	print("gist put <filename1> <filename2> ...")
+end
+
+local args = {...}
+local mode
+
+if not http then
+	print( "gist requires http API" )
+	print( "Set enableAPI_http to 1 in mod_ComputerCraft.cfg" )
+	return
+end
+
+if #args == 2 and args[1] == "get" then
+	mode = "get"
+elseif args[1] == "put" and #args >= 2 then
+	mode = "put"
+else
+	printUsage()
+	return
+end
+
+if mode == "get" then
+	
+	local id = args[2]
+
+	local resp = http.get(url.."/"..id)
+
+	if resp ~= nil then
+		--print("Success with code "..tostring(resp.getResponseCode()).."!")
+		local sresp = resp.readAll()
+		resp.close()
+		local data = decode(sresp)
+		--iterate over the files (there can be several in one gist)
+		for key, value in pairs(data["files"]) do
+			local file = value["filename"]
+			local localFile = file
+			local path = shell.resolve(localFile)
+			local confirm = true
+			while fs.exists(path) do
+				term.write("Local file "..localFile.." already exists. Overwrite? [y/n] ")
+				local inp = io.read():lower()
+				if inp ~= "y" then
+					term.write("Download to a new local file? [y/n] ")
+					local inp = io.read():lower()
+					if inp ~= "y" then
+						print("Skipping remote file: "..file)
+						confirm = false
+						break
+					else
+						term.write("Give a new file name: ")
+						localFile = io.read()
+						path = shell.resolve(localFile)
+					end
+				else
+					print("Overwriting local file: "..localFile)
+					break
+				end
+			end
+			if confirm then
+				local raw = http.get(value["raw_url"])
+				if raw == nil then print("Unable to download contents of "..file.."!") return end
+				local f = fs.open(path,"w")
+				f.write(raw.readAll())
+				f.close()
+				raw.close()
+				print("Remote file "..file.." downloaded!")
+			end
+		end
+
+	else
+		print("Failed to download gist with id "..id.."!")
+		return
+	end
+
+elseif mode == "put" then
+	local files = {}
+	for i = 2,#args do
+		local file = args[i]
+		local path = shell.resolve(file)
+		if not fs.exists(path) then
+			print("No such file: "..file)
+			return
+		end
+		local f = fs.open(path,"r")
+		files[file] = {}
+		files[file]["content"] = f.readAll()
+		f.close()
+	end
+
+	putvars["files"] = files
+
+	print("Give a description for the gist. (Can be blank)")
+	putvars["description"] = io.read()
+
+	term.write("Uploading to gist... ")
+	local resp = http.post(url,encode(putvars))
+
+	if resp ~= nil then
+		print("Success!")
+		--print("Success with code "..tostring(resp.getResponseCode()).."!")
+		local data = decode(resp.readAll())
+		resp.close()
+		print("Gist id: "..tostring(data["id"])..".")
+		print("Available for viewing at https://gist.github.com/"..tostring(data["id"]))
+	else
+		print("Failed.")
+	end
+end
